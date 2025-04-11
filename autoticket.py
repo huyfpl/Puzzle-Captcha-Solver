@@ -10,6 +10,9 @@ from collections import deque
 import uvicorn
 from autocaptcha import PuzzleCaptchaSolver  # Import the PuzzleCaptchaSolver class
 import os
+import imagehash
+from PIL import Image
+import requests
 
 app = FastAPI(title="Ticket Tracking API")
 
@@ -31,6 +34,10 @@ ticket_queue = deque()
 vietnam_tz = pytz.timezone('Asia/Ho_Chi_Minh')
 sheets_service = None
 ticket_cache = []
+
+DATA_CAPTCHA_DIR = "datacaptcha"
+if not os.path.exists(DATA_CAPTCHA_DIR):
+    os.makedirs(DATA_CAPTCHA_DIR)
 
 def init_google_sheets():
     global sheets_service
@@ -306,6 +313,66 @@ async def solve_captcha(shadow: str = Form(...), back: str = Form(...)):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error solving captcha: {str(e)}")
+
+def hash_image_url(image_url):
+    """
+    Generate a hash for the image at the given URL using imagehash.
+    :param image_url: URL of the image.
+    :return: Hash string of the image.
+    """
+    try:
+        response = requests.get(image_url, stream=True)
+        response.raise_for_status()
+        image = Image.open(response.raw)
+        return str(imagehash.average_hash(image))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error hashing image: {str(e)}")
+
+@app.post("/api/save-captcha-data")
+async def save_captcha_data(
+    imageUrl: str = Form(...),
+    puzzleLeft: str = Form(...),
+    sliderLeft: str = Form(...)
+):
+    """
+    Save captcha data into a JSON file in the datacaptcha directory.
+
+    :param imageUrl: URL of the captcha background image.
+    :param puzzleLeft: Position of the puzzle piece.
+    :param sliderLeft: Position of the slider.
+    :return: Success message.
+    """
+    try:
+        # Generate hash for the image URL
+        hashimageUrl = hash_image_url(imageUrl)
+
+        # Prepare the data entry
+        data_entry = {
+            "imageUrl": imageUrl,
+            "hashimageUrl": hashimageUrl,
+            "puzzleLeft": puzzleLeft,
+            "sliderLeft": sliderLeft,
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        }
+
+        # Define the JSON file path
+        json_file_path = os.path.join(DATA_CAPTCHA_DIR, "captcha_data.json")
+
+        # Load existing data or initialize an empty list
+        if os.path.exists(json_file_path):
+            with open(json_file_path, "r", encoding="utf-8") as file:
+                data = json.load(file)
+        else:
+            data = []
+
+        # Append the new entry and save back to the file
+        data.append(data_entry)
+        with open(json_file_path, "w", encoding="utf-8") as file:
+            json.dump(data, file, indent=2, ensure_ascii=False)
+
+        return {"status": True, "message": "Captcha data saved successfully", "data": data_entry}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error saving captcha data: {str(e)}")
 
 @app.get("/status")
 async def check_status():

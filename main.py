@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Form, HTTPException
+from fastapi import FastAPI,Body, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -8,12 +8,11 @@ import json
 import asyncio
 from collections import deque
 import uvicorn
-from autocaptcha import PuzzleCaptchaSolver  # Import the PuzzleCaptchaSolver class
-import os
-from pydantic import BaseModel  # Import BaseModel for request validation
-
+import re
+from autocaptchavip import PuzzleCaptchaSolver
 app = FastAPI(title="Ticket Tracking API")
 
+# CORS Configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,17 +21,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Constants
 CREDENTIALS_FILE = 'service_account.json'
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 SPREADSHEET_ID = "1ExRHONdCvGq--lZggVEQFGHhhkMYtCuZiOiOisbWTj0"
 SHEET_NAME = 'huy1'
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
+# Global variables
 ticket_queue = deque()
 vietnam_tz = pytz.timezone('Asia/Ho_Chi_Minh')
 sheets_service = None
-ticket_cache = []
 
+### Helper Functions ###
 def init_google_sheets():
     global sheets_service
     try:
@@ -43,25 +44,24 @@ def init_google_sheets():
             sheets_service = build('sheets', 'v4', credentials=creds)
         return sheets_service
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Không thể kết nối Google Sheets: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Google Sheets connection error: {str(e)}")
 
 def ensure_headers_and_format(service):
     try:
         result = service.spreadsheets().values().get(
-            spreadsheetId=SPREADSHEET_ID, range=f"{SHEET_NAME}!A1:C1"
+            spreadsheetId=SPREADSHEET_ID, range=f"{SHEET_NAME}!A1:D1"
         ).execute()
         headers = result.get('values', [])
-        expected_headers = ["Ticket", "Trạng thái", "Cập nhật cuối"]
+        expected_headers = ["ID Profile", "Ticket", "Trạng thái", "Cập nhật cuối"]
 
         if not headers or headers[0] != expected_headers:
             service.spreadsheets().values().update(
                 spreadsheetId=SPREADSHEET_ID,
-                range=f"{SHEET_NAME}!A1:C1",
+                range=f"{SHEET_NAME}!A1:D1",
                 valueInputOption="USER_ENTERED",
                 body={"values": [expected_headers]}
             ).execute()
 
-        # Định dạng cột thời gian thành dạng văn bản chuẩn
         service.spreadsheets().batchUpdate(
             spreadsheetId=SPREADSHEET_ID,
             body={
@@ -69,8 +69,8 @@ def ensure_headers_and_format(service):
                     "repeatCell": {
                         "range": {
                             "sheetId": 0,
-                            "startColumnIndex": 2,
-                            "endColumnIndex": 3
+                            "startColumnIndex": 3,
+                            "endColumnIndex": 4
                         },
                         "cell": {
                             "userEnteredFormat": {
@@ -86,69 +86,67 @@ def ensure_headers_and_format(service):
             }
         ).execute()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi cấu hình tiêu đề: {str(e)}")
-
-def sync_tickets_with_cache(service):
-    global ticket_cache
-    try:
-        result = service.spreadsheets().values().get(
-            spreadsheetId=SPREADSHEET_ID, range=f"{SHEET_NAME}!A2:C"
-        ).execute()
-        ticket_cache = result.get('values', [])
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi đồng bộ cache: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Header configuration error: {str(e)}")
 
 def parse_timestamp(timestamp_str):
-    """Xử lý các định dạng thời gian khác nhau"""
     try:
-        # Thử parse định dạng chuẩn
         return vietnam_tz.localize(datetime.strptime(timestamp_str, TIME_FORMAT))
     except ValueError:
         try:
-            # Nếu là số thập phân từ Google Sheets (số ngày từ 1899-12-30)
             days = float(timestamp_str.replace(',', '.'))
             base_date = datetime(1899, 12, 30, tzinfo=vietnam_tz)
             return base_date + timedelta(days=days)
         except ValueError:
-            raise ValueError(f"Không thể parse thời gian: {timestamp_str}")
+            raise ValueError(f"Invalid timestamp format: {timestamp_str}")
 
 def check_existing_tickets(service):
-    global ticket_queue, ticket_cache
+    global ticket_queue
     try:
-        sync_tickets_with_cache(service)
+        result = service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID, 
+            range=f"{SHEET_NAME}!A2:D",
+            majorDimension="ROWS"
+        ).execute()
+        
+        rows = result.get('values', [])
         now = datetime.now(vietnam_tz)
         expired_rows = []
 
-        for i, row in enumerate(ticket_cache, start=2):
-            if len(row) < 3:
-                print(f"Dòng {i} thiếu dữ liệu, bỏ qua.")
+        for i, row in enumerate(rows, start=2):
+            if len(row) < 4:
                 continue
-            timestamp_str = row[2].strip()
+            
             try:
-                ticket_time = parse_timestamp(timestamp_str)
+                ticket_time = parse_timestamp(row[3])
                 expiry_time = ticket_time + timedelta(minutes=5)
+                
                 if now >= expiry_time:
                     expired_rows.append(i)
                 else:
                     ticket_queue.append((i, expiry_time))
             except ValueError as e:
-                print(f"Lỗi parse thời gian tại dòng {i}: {timestamp_str} - {str(e)}")
+                print(f"Timestamp parse error at row {i}: {e}")
                 continue
 
-        if expired_rows:
-            for row in sorted(expired_rows, reverse=True):
-                service.spreadsheets().values().clear(
-                    spreadsheetId=SPREADSHEET_ID,
-                    range=f"{SHEET_NAME}!A{row}:C{row}"
-                ).execute()
-                ticket_cache.pop(row - 2)
-                print(f"Đã xóa ticket hết hạn tại dòng {row} khi khởi động")
+        for row in sorted(expired_rows, reverse=True):
+            id_to_keep = rows[row-2][0] if len(rows[row-2]) > 0 else ""
+            values = [[id_to_keep, "", "", ""]]
+            
+            service.spreadsheets().values().update(
+                spreadsheetId=SPREADSHEET_ID,
+                range=f"{SHEET_NAME}!A{row}:D{row}",
+                valueInputOption="USER_ENTERED",
+                body={"values": values}
+            ).execute()
+            
+            print(f"Cleared expired ticket at row {row}, kept ID: {id_to_keep}")
 
     except Exception as e:
-        print(f"Lỗi khi kiểm tra ticket hiện có: {str(e)}")
+        print(f"Error checking existing tickets: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Ticket check error: {str(e)}")
 
 async def cleanup_expired_tickets():
-    global ticket_queue, ticket_cache
+    global ticket_queue
     while True:
         try:
             service = init_google_sheets()
@@ -165,161 +163,197 @@ async def cleanup_expired_tickets():
 
             if expired_rows:
                 for row in sorted(expired_rows, reverse=True):
-                    service.spreadsheets().values().clear(
+                    result = service.spreadsheets().values().get(
                         spreadsheetId=SPREADSHEET_ID,
-                        range=f"{SHEET_NAME}!A{row}:C{row}"
+                        range=f"{SHEET_NAME}!A{row}:A{row}"
                     ).execute()
-                    if row - 2 < len(ticket_cache):
-                        ticket_cache.pop(row - 2)
-                    print(f"Đã xóa ticket tại dòng {row}")
+                    id_to_keep = result.get('values', [[""]])[0][0]
+                    
+                    service.spreadsheets().values().update(
+                        spreadsheetId=SPREADSHEET_ID,
+                        range=f"{SHEET_NAME}!A{row}:D{row}",
+                        valueInputOption="USER_ENTERED",
+                        body={"values": [[id_to_keep, "", "", ""]]}
+                    ).execute()
+                    
+                    print(f"Auto-cleared expired ticket at row {row}")
 
             await asyncio.sleep(10)
         except Exception as e:
-            print(f"Lỗi trong cleanup: {str(e)}")
+            print(f"Cleanup error: {str(e)}")
             await asyncio.sleep(10)
-
+# giải captcha
+@app.post("/api/verify-captcha")
+async def verify_captcha(body: dict = Body(...)):
+    try:
+        solver = PuzzleCaptchaSolver(
+            gap_image_url=body["gap_image_url"],
+            bg_image_url=body["bg_image_url"],
+            output_image_path=body.get("output_image_path", "result/result.png"),
+            gap_image_folder=body.get("gap_image_folder", "gap_image"),
+            json_path=body.get("json_path", "captcha.json")
+        )
+        result = solver.discern()
+        
+        if result["position"] is None:
+            raise HTTPException(400, "Failed to solve captcha")
+            
+        return {
+            "status": True,
+            "message": "Success",
+            "result": {k: result[k] for k in ["position", "best_confidence", "best_gap_image",
+                                            "gap_url", "result_image", "nearest_puzzle_left",
+                                            "nearest_slider_left"]}
+        }
+    except FileNotFoundError as e:
+        raise HTTPException(404, f"File not found: {e}")
+    except KeyError as e:
+        raise HTTPException(400, f"Missing required field: {e}")
+    except Exception as e:
+        raise HTTPException(500, f"Error")
+### API Endpoints ###
 @app.post("/api/add-ticket")
 async def add_ticket(ticket: str = Form(...)):
-    global ticket_queue, ticket_cache
+    global ticket_queue
     try:
         service = init_google_sheets()
         ensure_headers_and_format(service)
-
+        
         now = datetime.now(vietnam_tz)
         expiry = now + timedelta(minutes=5)
         timestamp = now.strftime(TIME_FORMAT)
-
-        values = [[ticket, "Mới", timestamp]]
-        service.spreadsheets().values().append(
+        
+        # Lấy dữ liệu hiện tại từ sheet (chỉ cột B trở đi)
+        result = service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
-            range=f"{SHEET_NAME}!A:C",
+            range=f"{SHEET_NAME}!B2:D",
+            majorDimension="ROWS"
+        ).execute()
+        
+        rows = result.get('values', [])
+        
+        # Tìm ô trống đầu tiên trong cột B
+        target_row = None
+        for i, row in enumerate(rows, start=2):
+            if len(row) == 0 or not row[0].strip():  # Nếu ô B trống
+                target_row = i
+                break
+        
+        # Nếu không tìm thấy ô trống trong dữ liệu hiện có, thêm vào hàng tiếp theo
+        if target_row is None:
+            target_row = len(rows) + 2
+        
+        # Ghi ticket mới vào ô B của hàng target_row
+        values = [[ticket, "Mới", timestamp]]
+        service.spreadsheets().values().update(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{SHEET_NAME}!B{target_row}:D{target_row}",  # Chỉ ghi từ B đến D
             valueInputOption="USER_ENTERED",
-            insertDataOption="INSERT_ROWS",
             body={"values": values}
         ).execute()
-
-        ticket_cache.append([ticket, "Mới", timestamp])
-        row_count = len(ticket_cache) + 1
-        ticket_queue.append((row_count, expiry))
-        print(f"Thêm ticket mới tại dòng {row_count}, expiry = {expiry}")
-
-        return {"status": True, "message": "Ticket đã được thêm"}
+        
+        # Cập nhật ticket_queue
+        ticket_queue.append((target_row, expiry))
+        
+        return {
+            "status": True,
+            "message": f"Đã thêm ticket vào ô B{target_row}"
+        }
+            
     except Exception as e:
+        print(f"Lỗi khi thêm ticket: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Lỗi thêm ticket: {str(e)}")
 
 @app.get("/api/delete-ticket")
 async def delete_ticket(ticket: str):
-    global ticket_queue, ticket_cache
+    global ticket_queue
     try:
         service = init_google_sheets()
-        if not ticket_cache:
-            sync_tickets_with_cache(service)
-
-        row_to_delete = None
-        for i, row in enumerate(ticket_cache, start=2):
-            if len(row) >= 1 and row[0] == ticket:
-                row_to_delete = i
-                break
-
-        if row_to_delete is None:
-            return {"status": False, "message": f"Không tìm thấy ticket {ticket}"}
-
-        service.spreadsheets().values().clear(
+        result = service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
-            range=f"{SHEET_NAME}!A{row_to_delete}:C{row_to_delete}"
+            range=f"{SHEET_NAME}!B2:B",
+            majorDimension="COLUMNS"
         ).execute()
         
-        ticket_cache.pop(row_to_delete - 2)
-        ticket_queue = deque([(row, expiry) for row, expiry in ticket_queue if row != row_to_delete])
-        
-        print(f"Đã xóa ticket {ticket} tại dòng {row_to_delete}")
-        return {"status": True, "message": f"Đã xóa ticket {ticket}"}
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi khi xóa ticket: {str(e)}")
-
-@app.get("/api/latest-ticket")
-async def get_latest_ticket():
-    try:
-        service = init_google_sheets()
-        if not ticket_cache:
-            sync_tickets_with_cache(service)
-        
-        if not ticket_cache:
-            return {"status": False, "ticket": None, "message": "Không có ticket nào"}
-        
-        latest_row = ticket_cache[-1]
-        if len(latest_row) < 3:
-            raise HTTPException(status_code=500, detail="Dữ liệu ticket không hợp lệ")
-            
-        now = datetime.now(vietnam_tz)
-        timestamp_str = latest_row[2].strip()
+        tickets = result.get('values', [[]])[0]
         
         try:
-            ticket_time = parse_timestamp(timestamp_str)
-            time_diff = now - ticket_time
+            row_number = tickets.index(ticket.strip()) + 2
+            id_result = service.spreadsheets().values().get(
+                spreadsheetId=SPREADSHEET_ID,
+                range=f"{SHEET_NAME}!A{row_number}:A{row_number}"
+            ).execute()
+            id_to_keep = id_result.get('values', [[""]])[0][0]
             
-            if time_diff > timedelta(minutes=3):
-                return {"status": False, "ticket": None, "message": "Ticket mới nhất đã quá 5 phút"}
-                
-            ticket_data = {
-                "ticket": latest_row[0],
-                "status": latest_row[1],
-                "timestamp": ticket_time.strftime(TIME_FORMAT)
-            }
-            return {"status": True, "ticket": ticket_data}
+            service.spreadsheets().values().update(
+                spreadsheetId=SPREADSHEET_ID,
+                range=f"{SHEET_NAME}!A{row_number}:D{row_number}",
+                valueInputOption="USER_ENTERED",
+                body={"values": [[id_to_keep, "", "", ""]]}
+            ).execute()
             
-        except ValueError as e:
-            raise HTTPException(status_code=500, detail=f"Lỗi parse thời gian: {str(e)}")
+            ticket_queue = deque([(r, e) for r, e in ticket_queue if r != row_number])
+            return {"status": True, "message": f"Ticket {ticket} deleted"}
+            
+        except ValueError:
+            return {"status": False, "message": f"Ticket {ticket} not found"}
             
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi khi lấy ticket mới nhất: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Deletion error: {str(e)}")
 
-class CaptchaRequest(BaseModel):
-    shadow: str  # URL of the shadow (gap) image
-    back: str    # URL of the background image
-
-@app.post("/api/solve-captcha")
-async def solve_captcha(request: CaptchaRequest):
-    """
-    Solve the captcha by processing the shadow and background image URLs.
-
-    :param request: A JSON object containing 'shadow' and 'back' URLs.
-    :return: The x-coordinate of the slide position.
-    """
+@app.get("/api/latest-ticket/{id_profile}")
+async def get_latest_ticket_by_id(id_profile: str):
     try:
-        # Define the output path for the result image
-        output_path = os.path.join("result", "captcha_result.png")
-        os.makedirs("result", exist_ok=True)  # Ensure the result directory exists
-
-        # Initialize the PuzzleCaptchaSolver
-        solver = PuzzleCaptchaSolver(
-            gap_image_url=request.shadow,
-            bg_image_url=request.back,
-            output_image_path=output_path
-        )
-
-        # Solve the captcha
-        result = solver.discern()
-
-        # Return only the slide position
-        return {
-            "status": True,
-            "position": result["position"],
-            "message": "Captcha solved successfully"
-        }
+        service = init_google_sheets()
+        result = service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"{SHEET_NAME}!A2:D",
+            majorDimension="ROWS"
+        ).execute()
+        
+        rows = result.get('values', [])
+        now = datetime.now(vietnam_tz)
+        latest_ticket = None
+        latest_time = None
+        
+        for row in rows:
+            if len(row) > 0 and str(row[0]).strip() == id_profile.strip():
+                if len(row) < 4 or not row[3]:
+                    continue
+                    
+                try:
+                    ticket_time = parse_timestamp(row[3])
+                    if latest_time is None or ticket_time > latest_time:
+                        latest_time = ticket_time
+                        latest_ticket = {
+                            "id_profile": row[0],
+                            "ticket": row[1] if len(row) > 1 else "",
+                            "status": row[2] if len(row) > 2 else "",
+                            "timestamp": row[3]
+                        }
+                except ValueError:
+                    continue
+        
+        if not latest_ticket:
+            return {"status": False, "message": f"No tickets found for {id_profile}"}
+        
+        if now - parse_timestamp(latest_ticket["timestamp"]) > timedelta(minutes=5):
+            return {"status": False, "message": "Ticket expired"}
+            
+        return {"status": True, "ticket": latest_ticket}
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error solving captcha: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Lookup error: {str(e)}")
 
 @app.get("/status")
 async def check_status():
     return {
         "status": "online",
         "spreadsheet_id": SPREADSHEET_ID,
-        "spreadsheet_url": f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}",
-        "timestamp": datetime.now().strftime(TIME_FORMAT)
+        "timestamp": datetime.now(vietnam_tz).strftime(TIME_FORMAT)
     }
 
+### Startup ###
 @app.on_event("startup")
 async def on_startup():
     service = init_google_sheets()

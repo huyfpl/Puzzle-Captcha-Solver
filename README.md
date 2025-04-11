@@ -1,105 +1,104 @@
-# Puzzle Captcha Solver 🧩🧩
+🧩 PuzzleCaptchaSolver - Giải Captcha dạng kéo thả tự động
+PuzzleCaptchaSolver là một dự án Python giúp giải các loại CAPTCHA dạng hình ảnh kéo thả như Geetest3, Geetest4, Binance, DataDome, TikTok và nhiều loại khác. Dự án sử dụng thư viện OpenCV để xử lý ảnh và xác định chính xác vị trí cần kéo của mảnh ghép.
 
-PuzzleCaptchaSolver is a Python project designed to solve various puzzle CAPTCHAs such as Geetest3, Geetest4, Binance, DataDome, TikTok, and others. This project leverages OpenCV to process images and identify the position of the puzzle piece (slide) within the background image.
+🎯 Tính năng
+Xóa khoảng trắng: Tự động cắt bỏ các khoảng trắng không cần thiết trong ảnh.
 
-## Sponsors
-<div align="center">
-  <a href="https://www.sadcaptcha.com?ref=vsmutok" target="_blank">
-    <img src="https://sadcaptcha.b-cdn.net/tiktok3d.webp" width="100" alt="TikTok Captcha Solver">
-    <img src="https://sadcaptcha.b-cdn.net/tiktokrotate.webp" width="100" alt="TikTok Captcha Solver">
-    <img src="https://sadcaptcha.b-cdn.net/tiktokpuzzle.webp" width="100" alt="TikTok Captcha Solver">
-    <img src="https://sadcaptcha.b-cdn.net/tiktokicon.webp" width="100" alt="TikTok Captcha Solver">
-    <br/>
-    <div>
-         <strong> Bypass any TikTok captcha </strong> in just two lines of code.<br> Scale your TikTok automation and get unblocked with SadCaptcha.
-    </div>
-  </a>
-</div>
+Phát hiện cạnh: Áp dụng phát hiện cạnh để cải thiện độ chính xác khi ghép ảnh.
 
-## Features
+Xác định vị trí: Tìm và đánh dấu chính xác vị trí mảnh ghép trên ảnh nền.
 
-- **Whitespace Removal:** Automatically crops the image to remove any unnecessary whitespace.
-- **Edge Detection:** Highlights the edges of images to improve the accuracy of template matching.
-- **Slide Positioning:** Accurately finds and marks the position of the puzzle piece within the background image.
+🚀 Cài đặt
+Clone source:
 
-## Installation
+bash
+Sao chép
+Chỉnh sửa
+git clone https://github.com/huyfpl/Puzzle-Captcha-Solver.git
+cd Puzzle-Captcha-Solver
+Tạo và kích hoạt môi trường ảo:
 
-1. Clone the repository:
-   ```sh
-   git clone https://github.com/vsmutok/Puzzle-Captcha-Solver.git
-   cd Puzzle-Captcha-Solver
-   ```
-2. Create and activate virtual environment:
-   ```sh
-   python3 -m venv .venv
-   source .venv/bin/activate
-   ```
-3. Install the required dependencies:
-   ```sh
-   pip install -r requirements.txt
-   ```
+bash
+Sao chép
+Chỉnh sửa
+python3 -m venv .venv
+source .venv/bin/activate
+Cài đặt thư viện cần thiết:
 
+bash
+Sao chép
+Chỉnh sửa
+pip install -r requirements.txt
+🧠 Cách sử dụng API
+Sau khi server FastAPI được chạy lên (mặc định cổng 3000), bạn có thể gửi yêu cầu POST đến API sau để giải captcha:
 
-## Usage
+📮 Endpoint: POST /api/verify-captcha
+✅ Request:
+json
+Sao chép
+Chỉnh sửa
+{
+  "gap_image_url": "https://static-captcha-sgp.aliyuncs.com/qst/PUZZLE/online/530/4adcf955-9d0a-4cb0-a9ab-95754da9902d/shadow.png",
+  "bg_image_url": "https://static-captcha-sgp.aliyuncs.com/qst/PUZZLE/online/530/4adcf955-9d0a-4cb0-a9ab-95754da9902d/back.png"
+}
+gap_image_url: Đường dẫn tới ảnh mảnh ghép (shadow).
 
-The primary class in this project is `PuzzleCaptchaSolver`. Here's how you can use it:
+bg_image_url: Đường dẫn tới ảnh nền (background).
 
-1. **Initialization:** Create an instance of `PuzzleCaptchaSolver` by providing the paths to the gap image, background image, and the output image path.
+output_image_path (tuỳ chọn): Nơi lưu ảnh kết quả (mặc định result/result.png).
 
-2. **Discern:** Call the `discern` method to process the images and find the position of the slide.
+gap_image_folder (tuỳ chọn): Thư mục lưu ảnh mảnh ghép.
 
-### Example
+json_path (tuỳ chọn): File JSON chứa thông tin chi tiết kết quả.
 
-```python
-from PuzzleCaptchaSolver import PuzzleCaptchaSolver
+🔁 Response (thành công):
+json
+Sao chép
+Chỉnh sửa
+{
+  "status": true,
+  "message": "Success",
+  "result": {
+    "position": 153,
+    "best_confidence": 0.9876,
+    "best_gap_image": "gap_image/4adcf955-slice.png",
+    "gap_url": "https://static-captcha-sgp.aliyuncs.com/qst/PUZZLE/online/530/4adcf955-.../shadow.png",
+    "result_image": "result/result.png",
+    "nearest_puzzle_left": 153,
+    "nearest_slider_left": 152
+  }
+}
+❌ Response (thất bại):
+json
+Sao chép
+Chỉnh sửa
+{
+  "detail": "Failed to solve captcha"
+}
+💡 Ví dụ dùng bằng curl
+bash
+Sao chép
+Chỉnh sửa
+curl -X POST http://0.0.0.0:3000/api/verify-captcha \
+-H "Content-Type: application/json" \
+-d '{
+  "gap_image_url":"https://static-captcha-sgp.aliyuncs.com/qst/PUZZLE/online/530/4adcf955-9d0a-4cb0-a9ab-95754da9902d/shadow.png",
+  "bg_image_url":"https://static-captcha-sgp.aliyuncs.com/qst/PUZZLE/online/530/4adcf955-9d0a-4cb0-a9ab-95754da9902d/back.png"
+}'
+⚙ Các endpoint khác (liên quan đến Google Sheet)
+API	Mô tả
+POST /api/add-ticket	Thêm ticket mới (qua form)
+GET /api/delete-ticket?ticket=abc	Xoá ticket theo nội dung
+GET /api/latest-ticket/{id_profile}	Lấy ticket mới nhất theo ID Profile
+GET /status	Kiểm tra trạng thái server
+⚠️ Lưu ý
+Mỗi ticket tồn tại tối đa 5 phút trước khi tự động xóa.
 
-if __name__ == "__main__":
-    solver = PuzzleCaptchaSolver(
-        gap_image_path="demo/geetest4/1_slice.png",
-        bg_image_path="demo/geetest4/1_bg.png",
-        output_image_path="demo/geetest4/1_result.png"
-    )
-    position = solver.discern()
-    print(f"The position of the slide is: {position}")
-```
+API tự động kết nối với Google Sheet để lưu trữ trạng thái ticket.
 
-**Input Images**:
-- Background Image
-> ![Background Image](demo/geetest4/1_bg.png)
-- Slide Image
->![Slide Image](demo/geetest4/1_slice.png)
+📄 Giấy phép
+Dự án được cấp phép theo giấy phép MIT.
 
-**Output Image**:
-> ![Result Image](demo/geetest4/1_result.png)
-
-In the resulting image, the detected position of the sliding piece is highlighted with a red rectangle.
-
-
-### Methods
-
-- `remove_whitespace(image)`: Removes whitespace from an image.
-- `apply_edge_detection(img)`: Applies edge detection on the given image.
-- `find_position_of_slide(slide_pic, background_pic)`: Finds the position of the slide on the background picture.
-- `discern()`: Performs the full discernment process to find the position of the slide in the given images.
-
-## Contributing
-
-Contributions are welcome! If you have any suggestions, feel free to open an issue or create a pull request.
-
-## License
-
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for more details.
-
-## Acknowledgements
-
-- [OpenCV](https://opencv.org/) for their powerful image processing library.
-
----
-
-By using this project, you can efficiently solve various puzzle CAPTCHAs, making it easier to automate interactions with websites that use these types of verifications.
-
-___
-#### Disclaimer
-
-_This repository is created for informational purposes only. I do not advise or condone violating the policies of any website._
+🛡️ Disclaimer
+Dự án này được tạo ra nhằm mục đích học tập và nghiên cứu. Không khuyến khích hoặc chịu trách nhiệm cho bất kỳ hành động vi phạm nào đối với chính sách của các trang web.
 
